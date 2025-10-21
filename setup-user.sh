@@ -8,6 +8,12 @@ HOME_DIR="/home/${USERNAME}"
 SSH_DIR="${HOME_DIR}/.ssh"
 KEY_FILE="${SSH_DIR}/id_ed25519"
 
+ROOT_SSH_DIR="/root/.ssh"
+ROOT_AUTH_KEYS="${ROOT_SSH_DIR}/authorized_keys"
+ROOT_CONFIG="${ROOT_SSH_DIR}/config"
+ROOT_PRIVATE_KEY="${ROOT_SSH_DIR}/id_ed25519"
+ROOT_PUBLIC_KEY="${ROOT_SSH_DIR}/id_ed25519.pub"
+
 # Función para detectar package manager e instalar paquetes
 install_pkg() {
   pkg="$1"
@@ -76,31 +82,91 @@ else
   fi
 fi
 
-# Crear .ssh y generar clave si no existe
+# Crear .ssh y fijar permisos básicos
 echo "Configurando SSH para ${USERNAME}..."
 mkdir -p "${SSH_DIR}"
 chown "${USERNAME}:${USERNAME}" "${SSH_DIR}"
 chmod 700 "${SSH_DIR}"
 
-if [ ! -f "${KEY_FILE}" ]; then
-  echo "Generando clave ed25519 en ${KEY_FILE}..."
-  # Generar la clave como el usuario (para que el propietario sea correcto)
-  sudo -u "${USERNAME}" ssh-keygen -t ed25519 -C "${USERNAME}@$(hostname)" -f "${KEY_FILE}" -N ""
-  chown "${USERNAME}:${USERNAME}" "${KEY_FILE}" "${KEY_FILE}.pub"
-  chmod 600 "${KEY_FILE}"
-  chmod 644 "${KEY_FILE}.pub"
-  echo "Clave generada."
+# En vez de generar la clave, copiar la que está en /root/.ssh
+COPIED_ANY_KEY=false
+
+# 1) Copiar config si existe
+if [ -f "${ROOT_CONFIG}" ]; then
+  echo "Copiando ${ROOT_CONFIG} -> ${SSH_DIR}/config"
+  cp -p "${ROOT_CONFIG}" "${SSH_DIR}/config"
+  chown "${USERNAME}:${USERNAME}" "${SSH_DIR}/config"
+  chmod 600 "${SSH_DIR}/config"
 else
-  echo "Ya existe clave en ${KEY_FILE}, no se sobrescribe."
+  echo "No existe ${ROOT_CONFIG}, se omite."
 fi
 
-# Crear authorized_keys (añadir la pública por defecto)
-AUTH_KEYS="${SSH_DIR}/authorized_keys"
-if ! grep -qxF "$(cat "${KEY_FILE}.pub")" "${AUTH_KEYS}" 2>/dev/null; then
-  cat "${KEY_FILE}.pub" >> "${AUTH_KEYS}"
+# 2) Copiar authorized_keys (haciendo merge y evitando duplicados)
+if [ -f "${ROOT_AUTH_KEYS}" ]; then
+  echo "Integrando claves de ${ROOT_AUTH_KEYS} en ${SSH_DIR}/authorized_keys (evitando duplicados)..."
+  # Aseguramos fichero destino
+  touch "${SSH_DIR}/authorized_keys"
+  chown "${USERNAME}:${USERNAME}" "${SSH_DIR}/authorized_keys"
+  chmod 600 "${SSH_DIR}/authorized_keys"
+
+  # Concatenar y deduplicar líneas
+  # Usamos una copia temporal y luego movemos al destino
+  TMP_MERGE="$(mktemp)"
+  cat "${SSH_DIR}/authorized_keys" >> "${TMP_MERGE}" || true
+  cat "${ROOT_AUTH_KEYS}" >> "${TMP_MERGE}" || true
+  awk '!seen[$0]++' "${TMP_MERGE}" > "${TMP_MERGE}.uniq"
+  mv "${TMP_MERGE}.uniq" "${SSH_DIR}/authorized_keys"
+  rm -f "${TMP_MERGE}"
+  chown "${USERNAME}:${USERNAME}" "${SSH_DIR}/authorized_keys"
+  chmod 600 "${SSH_DIR}/authorized_keys"
+  COPIED_ANY_KEY=true
+else
+  echo "No existe ${ROOT_AUTH_KEYS}, se omite."
 fi
-chown "${USERNAME}:${USERNAME}" "${AUTH_KEYS}"
-chmod 600 "${AUTH_KEYS}"
+
+# 3) Copiar clave privada/publica id_ed25519 si existen en root
+if [ -f "${ROOT_PRIVATE_KEY}" ]; then
+  echo "Copiando clave privada ${ROOT_PRIVATE_KEY} -> ${KEY_FILE}"
+  cp -p "${ROOT_PRIVATE_KEY}" "${KEY_FILE}"
+  chown "${USERNAME}:${USERNAME}" "${KEY_FILE}"
+  chmod 600 "${KEY_FILE}"
+  COPIED_ANY_KEY=true
+
+  if [ -f "${ROOT_PUBLIC_KEY}" ]; then
+    echo "Copiando clave pública ${ROOT_PUBLIC_KEY} -> ${KEY_FILE}.pub"
+    cp -p "${ROOT_PUBLIC_KEY}" "${KEY_FILE}.pub"
+    chown "${USERNAME}:${USERNAME}" "${KEY_FILE}.pub"
+    chmod 644 "${KEY_FILE}.pub"
+  else
+    # Si no hay .pub en root, intentar generarla sin passphrase (solo si ssh-keygen existe)
+    if command -v ssh-keygen >/dev/null 2>&1; then
+      echo "No se encontró ${ROOT_PUBLIC_KEY}; generando pública a partir de la privada (sin passphrase)..."
+      sudo -u "${USERNAME}" ssh-keygen -y -f "${KEY_FILE}" > "${KEY_FILE}.pub"
+      chown "${USERNAME}:${USERNAME}" "${KEY_FILE}.pub"
+      chmod 644 "${KEY_FILE}.pub"
+    else
+      echo "ssh-keygen no disponible, no se puede generar la pública."
+    fi
+  fi
+else
+  echo "No existe clave privada ${ROOT_PRIVATE_KEY} en root; no se copiará una clave privada."
+fi
+
+# Si no se ha copiado ninguna clave y no existe id_ed25519 del usuario, opcional: dejar que el script genere una (mantengo comentado)
+if [ "${COPIED_ANY_KEY}" = false ] && [ ! -f "${KEY_FILE}" ]; then
+  echo "No se han copiado claves desde root y no existe ${KEY_FILE}."
+  echo "Actualmente el script no generará una nueva clave automáticamente."
+  echo "Si deseas generar una clave para el usuario, habilita la generación manualmente en el script."
+fi
+
+# Mensajes finales y permisos finales por si algo quedó fuera
+chown -R "${USERNAME}:${USERNAME}" "${SSH_DIR}"
+find "${SSH_DIR}" -type d -exec chmod 700 {} \;
+# Archivos privados deberían 600, públicos 644, config 600, authorized_keys 600
+[ -f "${SSH_DIR}/config" ] && chmod 600 "${SSH_DIR}/config"
+[ -f "${SSH_DIR}/authorized_keys" ] && chmod 600 "${SSH_DIR}/authorized_keys"
+[ -f "${KEY_FILE}" ] && chmod 600 "${KEY_FILE}"
+[ -f "${KEY_FILE}.pub" ] && chmod 644 "${KEY_FILE}.pub"
 
 echo ""
 echo "================================================="
@@ -108,11 +174,15 @@ echo "Usuario: ${USERNAME}"
 echo "Home: ${HOME_DIR}"
 echo "Contraseña temporal: ${PASSWORD}"
 echo ""
-echo "Clave pública (copiar a GitHub o a otros hosts):"
-echo "-------------------------------------------------"
-cat "${KEY_FILE}.pub"
-echo "-------------------------------------------------"
-echo "SSH privado: ${KEY_FILE}"
+if [ -f "${KEY_FILE}.pub" ]; then
+  echo "Clave pública (copiar a GitHub o a otros hosts):"
+  echo "-------------------------------------------------"
+  cat "${KEY_FILE}.pub"
+  echo "-------------------------------------------------"
+  echo "SSH privado: ${KEY_FILE}"
+else
+  echo "No hay clave pública en ${KEY_FILE}.pub"
+fi
 echo ""
 echo "Recomendaciones finales:"
 echo " - Cambia la contraseña: passwd ${USERNAME}"
