@@ -183,6 +183,17 @@ if [ -f "${KEY_FILE}.pub" ]; then
 else
   echo "No hay clave pública en ${KEY_FILE}.pub"
 fi
+
+# Dar acceso a Docker (si existe el grupo docker)
+if getent group docker >/dev/null 2>&1; then
+  echo "Añadiendo ${USERNAME} al grupo 'docker'..."
+  usermod -aG docker "${USERNAME}"
+else
+  echo "El grupo 'docker' no existe. Si Docker está instalado, crea el grupo y repite:"
+  echo "  groupadd docker && usermod -aG docker ${USERNAME}"
+fi
+
+
 echo ""
 echo "Recomendaciones finales:"
 echo " - Cambia la contraseña: passwd ${USERNAME}"
