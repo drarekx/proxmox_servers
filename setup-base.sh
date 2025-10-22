@@ -9,7 +9,7 @@ apt install -y \
     ca-certificates curl gnupg lsb-release \
     apt-transport-https software-properties-common \
     git wget nano vim zsh htop btop mc make \
-    ufw fail2ban cifs-utils
+    ufw fail2ban cifs-utils rsync
 
 echo "=== Configurando Docker ==="
 # Añadir clave y repo oficial
