@@ -5,8 +5,8 @@ set -euo pipefail
 SMB_SERVER="192.168.100.28"
 SMB_USER="smb"
 SMB_PASS="12345678a"
-MOUNT_BASE="/home/root/shared"
-CREDENTIALS_FILE="/home/root/.smbcredentials"
+MOUNT_BASE="/home/www/shared"
+CREDENTIALS_FILE="/home/www/.smbcredentials"
 
 # === 1. Crear carpetas de destino ===
 mkdir -p "${MOUNT_BASE}"/{backups,musica,comics,peliculas,series}
